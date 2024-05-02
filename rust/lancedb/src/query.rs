@@ -15,11 +15,15 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
+use arrow::array::AsArray;
+use arrow_array::{
+    make_array, Array, Float16Array, Float32Array, Float64Array, GenericStringArray,
+};
 use arrow_schema::DataType;
 use half::f16;
 
 use crate::arrow::SendableRecordBatchStream;
+use crate::embeddings::EmbeddingRegistry;
 use crate::error::{Error, Result};
 use crate::table::TableInternal;
 use crate::DistanceType;
@@ -108,6 +112,7 @@ pub trait IntoQueryVector {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>>;
 }
 
@@ -117,6 +122,7 @@ impl IntoQueryVector for Arc<dyn Array> {
         self,
         data_type: &DataType,
         _embedding_model_label: &str,
+        _embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         if data_type != self.data_type() {
             match data_type {
@@ -152,6 +158,7 @@ impl IntoQueryVector for &dyn Array {
         self,
         data_type: &DataType,
         _embedding_model_label: &str,
+        _embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         if data_type != self.data_type() {
             Err(Error::InvalidInput {
@@ -172,6 +179,7 @@ impl IntoQueryVector for &[f16] {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        _embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         match data_type {
             DataType::Float16 => {
@@ -202,6 +210,7 @@ impl IntoQueryVector for &[f32] {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        _embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         match data_type {
             DataType::Float16 => {
@@ -232,6 +241,7 @@ impl IntoQueryVector for &[f64] {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        _embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         match data_type {
                 DataType::Float16 => {
@@ -262,9 +272,10 @@ impl<const N: usize> IntoQueryVector for &[f16; N] {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         self.as_slice()
-            .to_query_vector(data_type, embedding_model_label)
+            .to_query_vector(data_type, embedding_model_label, embedding_registry)
     }
 }
 
@@ -273,9 +284,10 @@ impl<const N: usize> IntoQueryVector for &[f32; N] {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         self.as_slice()
-            .to_query_vector(data_type, embedding_model_label)
+            .to_query_vector(data_type, embedding_model_label, embedding_registry)
     }
 }
 
@@ -284,9 +296,10 @@ impl<const N: usize> IntoQueryVector for &[f64; N] {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         self.as_slice()
-            .to_query_vector(data_type, embedding_model_label)
+            .to_query_vector(data_type, embedding_model_label, embedding_registry)
     }
 }
 
@@ -295,9 +308,10 @@ impl IntoQueryVector for Vec<f16> {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         self.as_slice()
-            .to_query_vector(data_type, embedding_model_label)
+            .to_query_vector(data_type, embedding_model_label, embedding_registry)
     }
 }
 
@@ -306,9 +320,10 @@ impl IntoQueryVector for Vec<f32> {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         self.as_slice()
-            .to_query_vector(data_type, embedding_model_label)
+            .to_query_vector(data_type, embedding_model_label, embedding_registry)
     }
 }
 
@@ -317,9 +332,25 @@ impl IntoQueryVector for Vec<f64> {
         self,
         data_type: &DataType,
         embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
     ) -> Result<Arc<dyn Array>> {
         self.as_slice()
-            .to_query_vector(data_type, embedding_model_label)
+            .to_query_vector(data_type, embedding_model_label, embedding_registry)
+    }
+}
+
+impl IntoQueryVector for &str {
+    fn to_query_vector(
+        self,
+        _data_type: &DataType,
+        embedding_model_label: &str,
+        embedding_registry: &dyn EmbeddingRegistry,
+    ) -> Result<Arc<dyn Array>> {
+        let embedding = embedding_registry.get(embedding_model_label).unwrap();
+        let input = GenericStringArray::<i32>::from(vec![Some(self)]);
+        let query_vector = embedding.embed(Arc::new(input))?;
+        let query_vector = query_vector.as_fixed_size_list().value(0);
+        Ok(query_vector)
     }
 }
 
@@ -477,15 +508,20 @@ pub struct Query {
     pub(crate) filter: Option<String>,
     /// Select column projection.
     pub(crate) select: Select,
+    embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
 impl Query {
-    pub(crate) fn new(parent: Arc<dyn TableInternal>) -> Self {
+    pub(crate) fn new(
+        parent: Arc<dyn TableInternal>,
+        embedding_registry: Arc<dyn EmbeddingRegistry>,
+    ) -> Self {
         Self {
             parent,
             limit: None,
             filter: None,
             select: Select::All,
+            embedding_registry,
         }
     }
 
@@ -531,8 +567,19 @@ impl Query {
     ///
     /// * `vector` - The vector that will be used for search.
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
+        let embedding_registry = self.embedding_registry.clone();
         let mut vector_query = self.into_vector();
-        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
+        let query_vector =
+            vector.to_query_vector(&DataType::Float32, "default", embedding_registry.as_ref())?;
+        vector_query.query_vector = Some(query_vector);
+        Ok(vector_query)
+    }
+
+    pub fn search(self, vector: impl IntoQueryVector, datatype: &DataType) -> Result<VectorQuery> {
+        let embedding_registry = self.embedding_registry.clone();
+        let mut vector_query = self.into_vector();
+        let query_vector =
+            vector.to_query_vector(datatype, "default", embedding_registry.as_ref())?;
         vector_query.query_vector = Some(query_vector);
         Ok(vector_query)
     }

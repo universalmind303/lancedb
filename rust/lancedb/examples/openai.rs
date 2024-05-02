@@ -7,7 +7,7 @@ use lancedb::{
     arrow::IntoArrow,
     connect,
     embeddings::{openai::OpenAIEmbeddingFunction, EmbeddingDefinition},
-    query::ExecutableQuery,
+    query::{ExecutableQuery, QueryBase},
     Result,
 };
 
@@ -33,12 +33,15 @@ async fn main() -> Result<()> {
         .await?;
 
     // there is no equivalent to '.search(<query>)' yet
-    let mut results = table.query().execute().await?;
+    let mut results = table
+        .search("something warm")
+        .await?
+        .limit(1)
+        .execute()
+        .await?;
     while let Some(Ok(batch)) = results.next().await {
-        let embeddings = batch.column_by_name("embeddings");
-        assert!(embeddings.is_some());
-        let embeddings = embeddings.unwrap();
-        println!("{:?}", embeddings);
+        let items = batch.column_by_name("text").unwrap();
+        println!("{:?}", items);
     }
 
     Ok(())
@@ -51,9 +54,14 @@ fn make_data() -> impl IntoArrow {
         Field::new("price", DataType::Float64, false),
     ]);
 
-    let id = Int32Array::from(vec![1, 2]);
-    let text = GenericStringArray::<i32>::from(vec![Some("Black T-Shirt"), Some("Leather Jacket")]);
-    let price = Float64Array::from(vec![10.0, 50.0]);
+    let id = Int32Array::from(vec![1, 2, 3, 4]);
+    let text = GenericStringArray::<i32>::from(vec![
+        Some("Black T-Shirt"),
+        Some("Leather Jacket"),
+        Some("Winter Parka"),
+        Some("Swim Shorts"),
+    ]);
+    let price = Float64Array::from(vec![10.0, 50.0, 300.0, 20.0]);
     let schema = Arc::new(schema);
     let rb = RecordBatch::try_new(
         schema.clone(),

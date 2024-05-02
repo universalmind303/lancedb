@@ -76,6 +76,10 @@ impl EmbeddingDefinition {
             embedding_name: embedding_name.into(),
         }
     }
+    pub fn dest_column(&self) -> String {
+        self.dest_column.clone()
+            .unwrap_or_else(|| format!("{}_embedding", self.source_column))
+    }
 }
 
 /// A registry of embedding functions
@@ -194,12 +198,7 @@ impl<R: RecordBatchReader> WithEmbeddings<R> {
 
 impl<R: RecordBatchReader> WithEmbeddings<R> {
     fn dest_field(&self, nullable: bool) -> Field {
-        let field_name = self
-            .embedding_def
-            .dest_column
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| format!("{}_embedding", &self.embedding_def.source_column));
+        let field_name = self.embedding_def.dest_column();
 
         Field::new(
             field_name,

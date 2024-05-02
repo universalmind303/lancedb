@@ -136,6 +136,17 @@ impl TableDefinition {
             .insert("lancedb::column_definitions".to_string(), lancedb_metadata);
         Arc::new(schema_with_metadata)
     }
+
+    /// Get the column definition for the embedding column, if it exists.
+    /// If there are multiple embedding columns, this will return the first one.
+    pub fn embedding_column(&self) -> Option<&EmbeddingDefinition> {
+        self.column_definitions
+            .iter()
+            .find_map(|cd| match &cd.kind {
+                ColumnKind::Embedding(embedding) => Some(embedding),
+                _ => None,
+            })
+    }
 }
 
 /// Optimize the dataset.
@@ -737,7 +748,23 @@ impl Table {
     /// # });
     /// ```
     pub fn query(&self) -> Query {
-        Query::new(self.inner.clone())
+        Query::new(self.inner.clone(), self.embedding_registry.clone())
+    }
+
+    pub async fn search(&self, query: impl IntoQueryVector) -> Result<VectorQuery> {
+        let tbl_def = self.inner.table_definition().await?;
+        if let Some(embedding) = tbl_def.embedding_column() {
+            let query_vector = query.to_query_vector(
+                &DataType::Null, // this is not actually used as it gets the dtype from the embedding definition if exists
+                &embedding.embedding_name,
+                self.embedding_registry.as_ref(),
+            )?;
+            let mut q = self.query().into_vector().column(&embedding.dest_column());
+            q.query_vector = Some(query_vector);
+            Ok(q)
+        } else {
+            self.vector_search(query)
+        }
     }
 
     /// Search the table with a given query vector.
