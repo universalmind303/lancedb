@@ -423,6 +423,12 @@ impl std::fmt::Display for Table {
     }
 }
 
+impl std::fmt::Debug for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.inner)
+    }
+}
+
 impl Table {
     pub(crate) fn new(inner: Arc<dyn TableInternal>) -> Self {
         Self {

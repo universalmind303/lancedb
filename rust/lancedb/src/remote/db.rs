@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
+use bytes::Bytes;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
@@ -88,15 +89,16 @@ impl ConnectionInternal for RemoteDatabase {
             .await
             .unwrap()?;
 
-        let rsp = self
+        let bytes = Bytes::from(data_buffer);
+        let req = self
             .client
             .post(&format!("/v1/table/{}/create/", options.name))
-            .body(data_buffer)
+            .body(bytes)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             // This is currently expected by LanceDb cloud but will be removed soon.
-            .header("x-request-id", "na")
-            .send()
-            .await?;
+            .header("x-request-id", "na");
+
+        let rsp = dbg!(req).send().await?;
         self.client.check_response(rsp).await?;
 
         Ok(Table::new(Arc::new(RemoteTable::new(
@@ -105,12 +107,18 @@ impl ConnectionInternal for RemoteDatabase {
         ))))
     }
 
-    async fn do_open_table(&self, _options: OpenTableBuilder) -> Result<Table> {
-        todo!()
+    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
+        let name = options.name;
+        Ok(RemoteTable::new(self.client.clone(), name).into())
     }
 
-    async fn drop_table(&self, _name: &str) -> Result<()> {
-        todo!()
+    async fn drop_table(&self, name: &str) -> Result<()> {
+        let query = format!("/v1/table/{}/drop/", name);
+        let query = self.client.post(&query);
+
+        let rsp = dbg!(query).send().await?;
+        self.client.check_response(rsp).await?;
+        Ok(())
     }
 
     async fn drop_db(&self) -> Result<()> {

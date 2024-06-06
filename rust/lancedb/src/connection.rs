@@ -301,9 +301,9 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 #[derive(Clone, Debug)]
 pub struct OpenTableBuilder {
     parent: Arc<dyn ConnectionInternal>,
-    name: String,
-    index_cache_size: u32,
-    lance_read_params: Option<ReadParams>,
+    pub(crate) name: String,
+    pub(crate) index_cache_size: u32,
+    pub(crate) lance_read_params: Option<ReadParams>,
 }
 
 impl OpenTableBuilder {
@@ -423,6 +423,12 @@ pub struct Connection {
 }
 
 impl std::fmt::Display for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.internal)
+    }
+}
+
+impl std::fmt::Debug for Connection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.internal)
     }

@@ -4,7 +4,12 @@ use arrow_array::RecordBatchReader;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use datafusion_physical_plan::ExecutionPlan;
-use lance::dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewColumnTransform};
+use lance::{
+    arrow::json::JsonSchema,
+    dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewColumnTransform},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{
     connection::NoData,
@@ -15,6 +20,7 @@ use crate::{
         merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
         TableDefinition, TableInternal, UpdateBuilder,
     },
+    Table,
 };
 
 use super::client::RestfulLanceDbClient;
@@ -32,10 +38,42 @@ impl RemoteTable {
     }
 }
 
+impl From<RemoteTable> for Table {
+    fn from(table: RemoteTable) -> Self {
+        Table::new(Arc::new(table))
+    }
+}
+
 impl std::fmt::Display for RemoteTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "RemoteTable({})", self.name)
     }
+}
+
+impl RemoteTable {
+    async fn get_table_info(&self) -> Result<GetTableInfoResponse> {
+        let uri = format!("/v1/table/{}/describe/", self.name);
+
+        let resp = self.client.post(&uri).send().await?;
+        if !resp.status().is_success() {
+            return Err(crate::Error::Runtime {
+                message: resp.text().await?,
+            });
+        }
+        Ok(resp.json::<GetTableInfoResponse>().await?)
+    }
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GetTableInfoResponse {
+    pub table: String,
+    pub version: u64,
+    pub schema: JsonSchema,
+    pub stats: TableStats,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TableStats {
+    pub num_deleted_rows: usize,
+    pub num_fragments: usize,
 }
 
 #[async_trait]
@@ -49,8 +87,10 @@ impl TableInternal for RemoteTable {
     fn name(&self) -> &str {
         &self.name
     }
+
     async fn version(&self) -> Result<u64> {
-        todo!()
+        let tbl_info = self.get_table_info().await?;
+        Ok(tbl_info.version)
     }
     async fn checkout(&self, _version: u64) -> Result<()> {
         todo!()
@@ -62,10 +102,31 @@ impl TableInternal for RemoteTable {
         todo!()
     }
     async fn schema(&self) -> Result<SchemaRef> {
-        todo!()
+        let tbl_info = self.get_table_info().await?;
+        Ok(Arc::new(tbl_info.schema.try_into()?))
     }
-    async fn count_rows(&self, _filter: Option<String>) -> Result<usize> {
-        todo!()
+
+    async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
+        #[derive(Serialize, Deserialize)]
+        struct CountRowsRequest {
+            predicate: Option<String>,
+        }
+        let req = CountRowsRequest { predicate: filter };
+
+        let query = format!("/v1/table/{}/count_rows/", self.name);
+        let req = self
+            .client
+            .post(&query)
+            .header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&req).unwrap());
+        let resp = req.send().await?;
+
+        if !resp.status().is_success() {
+            return Err(crate::Error::Runtime {
+                message: resp.text().await?,
+            });
+        }
+        Ok(resp.json().await?)
     }
     async fn add(
         &self,
